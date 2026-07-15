@@ -1,6 +1,12 @@
 # ZInvert — example AviSynth+ plugin in Zig
 
-A small but complete AviSynth+ plugin built on the [`avisynth`](../README.md) module (consumed as a path dep on `../`), ported from the VapourSynth SDK invert example.
+A small but complete AviSynth+ plugin built on the [`avisynth`](../README.md) module, ported from the VapourSynth SDK invert example. The module is consumed exactly like any external consumer would — a git dep pinned with:
+
+```sh
+zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
+```
+
+That means local edits to the module are **not** picked up by this example until they are pushed and the pinned commit/hash in `build.zig.zon` is refreshed (re-run the `zig fetch --save` command above).
 
 ## Build
 

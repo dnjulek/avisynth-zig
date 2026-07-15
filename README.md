@@ -4,10 +4,13 @@ Zig module for writing AviSynth+ plugins, using [avisynthplus-c-api-dynamic-load
 
 ## Consumer build
 
-```zig
-// build.zig.zon
-.avisynth = .{ .path = "../avisynth" },
+Add the dependency to your package:
+
+```sh
+zig fetch --save git+https://github.com/dnjulek/avisynth-zig.git
 ```
+
+This pins the current commit in your `build.zig.zon` as `.avisynth`. Then wire it up:
 
 ```zig
 // build.zig
@@ -44,7 +47,7 @@ Call `getApi` once, from `avisynth_c_plugin_init`. The underlying loader initial
 
 ## Example
 
-`example/` is a standalone package that consumes this module exactly as described above and builds a real plugin DLL:
+`example/` is a standalone package that consumes this module exactly as described above (a `zig fetch`-pinned git dep, like any external consumer) and builds a real plugin DLL:
 
 ```sh
 cd example
