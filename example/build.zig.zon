@@ -1,0 +1,12 @@
+.{
+    .name = .invert_example,
+    .version = "1.0.0",
+    .paths = .{""},
+    .fingerprint = 0xcda4a3d94b7e2c15,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .avisynth = .{
+            .path = "../",
+        },
+    },
+}
