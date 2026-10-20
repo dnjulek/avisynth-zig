@@ -38,6 +38,19 @@ Assert(BitsPerComponent(srcf.ZInvert()) == 32, "ZInvert changed the float depth"
 Assert(srcrgb.ZInvert().IsPlanarRGBA(), "ZInvert changed the planar RGBA type")
 Assert(srcy.ZInvert().IsY(), "ZInvert changed the grayscale type")
 
+Assert(FunctionExists("ZPlaneMax"), "ZPlaneMax is not registered")
+
+# Cropped sources keep their parent's pitch while the new output frame gets
+# its own: exercises independent source/destination pitches.
+crop    = src.Crop(2, 2, -6, -2)
+crop16  = src16.Crop(2, 2, -6, -2)
+icrop   = crop.ZInvert()
+icrop16 = crop16.ZInvert()
+
+# Property-only filter: pixels pass through, ZPlaneMax holds per-plane maxima.
+pm   = src.ZPlaneMax()
+pmf  = srcf.ZPlaneMax()
+
 # ---- clips compared by the per-frame asserts ----
 builtin = src.Invert()
 pass    = src.ZInvert(enabled=false)
@@ -109,6 +122,22 @@ for (i = 0, frames) {
     Assert(LumaDifference(irgb_a, rgb_a) == 0.0, "RGBA double-invert A not identity at frame " + n)
     Assert(AverageLuma(rgb_a) == 255.0, "source alpha is not fully opaque at frame " + n)
     Assert(AverageLuma(inva) == 0.0, "inverted alpha is not zero at frame " + n)
+
+    # Mismatched pitches: same result as the built-in on the cropped view.
+    Assert(LumaDifference(icrop, crop.Invert()) == 0.0, "cropped invert luma differs at frame " + n)
+    Assert(LumaDifference(icrop.ZInvert(), crop) == 0.0, "cropped double invert not identity at frame " + n)
+    Assert(LumaDifference(icrop16.ZInvert(), crop16) == 0.0, "cropped 16-bit double invert not identity at frame " + n)
+
+    # Property-only output: identical pixels, maxima match the built-ins.
+    Assert(LumaDifference(pm, src) == 0.0, "ZPlaneMax altered the pixels at frame " + n)
+    mx = propGetAsArray(pm, "ZPlaneMax")
+    Assert(ArraySize(mx) == 3, "ZPlaneMax must hold 3 values at frame " + n)
+    Assert(mx[0] == YPlaneMax(src, 0.0), "ZPlaneMax Y differs from YPlaneMax at frame " + n)
+    Assert(mx[1] == UPlaneMax(src, 0.0), "ZPlaneMax U differs from UPlaneMax at frame " + n)
+    Assert(mx[2] == VPlaneMax(src, 0.0), "ZPlaneMax V differs from VPlaneMax at frame " + n)
+    Assert(propGetType(src, "ZPlaneMax") == 0, "ZPlaneMax leaked into the source frame props at frame " + n)
+    mxf = propGetAsArray(pmf, "ZPlaneMax")
+    Assert(Abs(mxf[0] - YPlaneMax(srcf, 0.0)) < 0.000001, "float ZPlaneMax Y differs at frame " + n)
 }
 
 # ---- the visible result: a 2x2 grid of source and inverted variants ----

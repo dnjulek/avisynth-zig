@@ -2,31 +2,32 @@
 //! https://github.com/vapoursynth/vapoursynth/blob/master/sdk/invert_example.c
 //!
 //! Registers `ZInvert(clip, bool "enabled")` — inverts all planes of planar
-//! 8..16-bit integer and 32-bit float formats.
+//! 8..16-bit integer and 32-bit float formats — and `ZPlaneMax(clip)`, a
+//! property-only analysis filter that stores each plane's maximum as the frame
+//! property `ZPlaneMax` (an int/float array) without copying any pixels.
+//!
+//! Uses the module's convenience layer (`avs.Filter`, `avs.Create`,
+//! `avs.FrameCtx`, `avs.Format`); the raw table stays reachable through
+//! `avs.table()` / `avs.c` for anything the wrappers do not cover.
 
 const std = @import("std");
 const avs = @import("avisynth");
 const c = avs.c;
 
-// https://ziglang.org/documentation/master/#Choosing-an-Allocator
-const allocator = std.heap.c_allocator;
+// ---------------------------------------------------------------------------
+// ZInvert: a pixel filter producing a new frame
+// ---------------------------------------------------------------------------
 
-/// The loaded C API function table. Set once in avisynth_c_plugin_init,
-/// before any filter code can run.
-var api: *const avs.AvsApi = undefined;
-
-const Data = struct {
-    enabled: bool,
+const InvertData = struct {
+    format: avs.Format,
 };
+
+const Invert = avs.Filter(InvertData, "ZInvert");
 
 fn invertPlane(
     comptime T: type,
-    noalias dst_ptr: [*]u8,
-    noalias src_ptr: [*]const u8,
-    dst_pitch: usize,
-    src_pitch: usize,
-    row_size: usize,
-    height: usize,
+    dst: avs.PlaneMut(T),
+    src: avs.Plane(T),
     // Result is `minuend - s`, clamped to [0, peak] for integer types.
     // Full-range planes pass minuend == peak; integer chroma passes
     // minuend == peak + 1 (pivot around the midpoint, so neutral stays
@@ -35,152 +36,136 @@ fn invertPlane(
     minuend: if (@typeInfo(T) == .float) T else u32,
     peak: u32,
 ) void {
-    const width = row_size / @sizeOf(T);
-    var dst_row = dst_ptr;
-    var src_row = src_ptr;
-    for (0..height) |_| {
-        const dst: [*]T = @ptrCast(@alignCast(dst_row));
-        const src: [*]const T = @ptrCast(@alignCast(src_row));
-        for (dst[0..width], src[0..width]) |*d, s| {
+    // Source and destination pitches are independent (a cropped source keeps
+    // its parent's pitch), so walk rows rather than one shared stride.
+    for (0..src.height) |y| {
+        for (dst.row(y), src.row(y)) |*d, s| {
             // Saturating sub so out-of-range integer input can't underflow.
             d.* = if (@typeInfo(T) == .float) minuend - s else @intCast(@min(minuend -| s, peak));
         }
-        dst_row += dst_pitch;
-        src_row += src_pitch;
     }
 }
 
-fn invertGetFrame(fi: *c.AVS_FilterInfo, n: c_int) callconv(.c) ?*c.AVS_VideoFrame {
-    const d: *Data = @ptrCast(@alignCast(fi.user_data));
+fn invertGetFrame(comptime T: type) Invert.GetFrameFn {
+    return struct {
+        fn getFrame(d: *InvertData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
+            const src = try ctx.childFrame(n);
+            defer src.release();
+            // prop_src=src carries the frame properties over to the new frame.
+            const dst = try ctx.newFrame(src);
 
-    const src = api.avs_get_frame.?(fi.child, n);
-    if (src == null) return null;
-
-    // Pass the source frame (and its reference) straight through.
-    if (!d.enabled) return src;
-
-    defer api.avs_release_video_frame.?(src);
-
-    // prop_src=src carries the frame properties over to the new frame (V8+).
-    const dst = api.avs_new_video_frame_p_a.?(fi.env, &fi.vi, src, c.AVS_FRAME_ALIGN);
-    if (dst == null) {
-        fi.@"error" = "ZInvert: could not allocate the destination frame.";
-        return null;
-    }
-
-    const vi = &fi.vi;
-    const yuv_planes = [4]c_int{ c.AVS_PLANAR_Y, c.AVS_PLANAR_U, c.AVS_PLANAR_V, c.AVS_PLANAR_A };
-    const rgb_planes = [4]c_int{ c.AVS_PLANAR_R, c.AVS_PLANAR_G, c.AVS_PLANAR_B, c.AVS_PLANAR_A };
-    const is_rgb = c.avs_is_rgb(vi) != 0;
-    const planes = if (is_rgb) rgb_planes else yuv_planes;
-    const num_planes: usize = @intCast(api.avs_num_components.?(vi));
-
-    for (planes[0..num_planes]) |plane| {
-        const src_p = api.avs_get_read_ptr_p.?(src, plane);
-        const dst_p = api.avs_get_write_ptr_p.?(dst, plane);
-        const src_pitch: usize = @intCast(api.avs_get_pitch_p.?(src, plane));
-        const dst_pitch: usize = @intCast(api.avs_get_pitch_p.?(dst, plane));
-        const row_size: usize = @intCast(api.avs_get_row_size_p.?(src, plane));
-        const height: usize = @intCast(api.avs_get_height_p.?(src, plane));
-
-        const chroma = !is_rgb and (plane == c.AVS_PLANAR_U or plane == c.AVS_PLANAR_V);
-
-        switch (api.avs_component_size.?(vi)) {
-            1 => invertPlane(u8, dst_p, src_p, dst_pitch, src_pitch, row_size, height, if (chroma) 256 else 255, 255),
-            2 => {
-                const shift: u5 = @intCast(api.avs_bits_per_component.?(vi));
-                const peak = (@as(u32, 1) << shift) - 1;
-                invertPlane(u16, dst_p, src_p, dst_pitch, src_pitch, row_size, height, if (chroma) peak + 1 else peak, peak);
-            },
-            // Float chroma is centered on 0.0, so inverting is negation.
-            else => invertPlane(f32, dst_p, src_p, dst_pitch, src_pitch, row_size, height, if (chroma) 0.0 else 1.0, 0),
+            const peak: u32 = if (@typeInfo(T) == .float) 0 else @intFromFloat(d.format.peak());
+            for (0..d.format.numPlanes()) |p| {
+                const id = d.format.planeId(p);
+                const chroma = d.format.isChroma(p);
+                const minuend = if (@typeInfo(T) == .float)
+                    // Float chroma is centered on 0.0, so inverting is negation.
+                    @as(f32, if (chroma) 0.0 else 1.0)
+                else if (chroma) peak + 1 else peak;
+                invertPlane(T, dst.planeMut(T, id), src.plane(T, id), minuend, peak);
+            }
+            return dst;
         }
-    }
-
-    return dst;
+    }.getFrame;
 }
 
-fn invertSetCacheHints(fi: *c.AVS_FilterInfo, cachehints: c_int, frame_range: c_int) callconv(.c) c_int {
-    _ = fi;
-    _ = frame_range;
-    return if (cachehints == c.AVS_CACHE_GET_MTMODE) c.AVS_MT_NICE_FILTER else 0;
+fn invertCreate(ctx: *avs.Create) !avs.Value {
+    const clip = try ctx.clip(0, "clip");
+    defer clip.release();
+    const enabled = try ctx.boolean(1, "enabled", true);
+
+    const format = avs.Format.fromVideoInfo(clip.videoInfo()) catch
+        return ctx.fail("only planar formats are supported.", .{});
+
+    // Pass the source through untouched (no filter instance at all).
+    if (!enabled) return avs.Create.returnClip(clip.retain());
+
+    const get_frame = switch (format.sample) {
+        inline else => |s| Invert.getFrame(invertGetFrame(s.Type())),
+    };
+    // Stateless per-frame work on immutable config: safe under MT_NICE_FILTER.
+    const out = try Invert.create(ctx.env, clip, .{ .format = format }, get_frame, .{ .mt_mode = .nice });
+    return avs.Create.returnClip(out);
 }
 
-fn invertFree(fi: *c.AVS_FilterInfo) callconv(.c) void {
-    const d: *Data = @ptrCast(@alignCast(fi.user_data));
-    allocator.destroy(d);
-    fi.user_data = null;
-}
+// ---------------------------------------------------------------------------
+// ZPlaneMax: a property-only filter (copy-on-write of the property map)
+// ---------------------------------------------------------------------------
 
-fn invertCreate(env: ?*c.AVS_ScriptEnvironment, args: c.AVS_Value, user_data: ?*anyopaque) callconv(.c) c.AVS_Value {
-    _ = user_data;
-
-    // avs_new_c_filter always stores a non-null `&filter->d` into its
-    // `AVS_FilterInfo**` out-param, so the cast to the C pointer type is sound.
-    var fi: *c.AVS_FilterInfo = undefined;
-    // store_child=1: fi.child holds the source clip and the env releases it.
-    const clip = api.avs_new_c_filter.?(env, @ptrCast(&fi), c.avs_array_elt(args, 0), 1);
-    // avs_set_to_clip below takes its own reference, so ours is released
-    // unconditionally; on the error paths this destroys the half-built filter
-    // (safe — get_frame/free_filter/user_data are not set yet).
-    defer api.avs_release_clip.?(clip);
-
-    const vi = &fi.vi;
-    if (c.avs_has_video(vi) == 0)
-        return c.avs_new_value_error("ZInvert: input clip must have video.");
-    if (c.avs_is_planar(vi) == 0)
-        return c.avs_new_value_error("ZInvert: only planar formats are supported.");
-
-    const enabled_arg = c.avs_array_elt(args, 1);
-    const enabled = if (c.avs_defined(enabled_arg) != 0) c.avs_as_bool(enabled_arg) != 0 else true;
-
-    const data = allocator.create(Data) catch return c.avs_new_value_error("ZInvert: out of memory.");
-    data.* = .{ .enabled = enabled };
-
-    fi.user_data = data;
-    // The callbacks take `*AVS_FilterInfo` rather than translate-c's `[*c]`:
-    // the host always passes the address of its live filter info (never null,
-    // never an array), and the two pointer types are ABI-identical.
-    fi.get_frame = @ptrCast(&invertGetFrame);
-    fi.set_cache_hints = @ptrCast(&invertSetCacheHints);
-    fi.free_filter = @ptrCast(&invertFree);
-
-    var v: c.AVS_Value = undefined;
-    api.avs_set_to_clip.?(&v, clip);
-    return v;
-}
-
-// V8 is the floor: avs_new_video_frame_p_a and frame properties.
-const REQUIRED_INTERFACE_VERSION: c_int = 8;
-const REQUIRED_BUGFIX_VERSION: c_int = 0;
-
-// Everything called through `api` above. Loading fails if any is missing
-// from the avisynth library; the rest of the table loads as optional.
-const required_functions = [_][*:0]const u8{
-    "avs_add_function",
-    "avs_bits_per_component",
-    "avs_component_size",
-    "avs_get_frame",
-    "avs_get_height_p",
-    "avs_get_pitch_p",
-    "avs_get_read_ptr_p",
-    "avs_get_row_size_p",
-    "avs_get_write_ptr_p",
-    "avs_new_c_filter",
-    "avs_new_video_frame_p_a",
-    "avs_num_components",
-    "avs_release_clip",
-    "avs_release_video_frame",
-    "avs_set_to_clip",
+const MaxData = struct {
+    format: avs.Format,
 };
 
-export fn avisynth_c_plugin_init(env: ?*c.AVS_ScriptEnvironment) callconv(.c) [*:0]const u8 {
+const PlaneMax = avs.Filter(MaxData, "ZPlaneMax");
+
+fn planeMaxGetFrame(comptime T: type) PlaneMax.GetFrameFn {
+    return struct {
+        fn getFrame(d: *MaxData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
+            var frame = try ctx.childFrame(n);
+            errdefer frame.release();
+            const env = ctx.env();
+            // Pixels stay shared with the source; only the props get a private
+            // copy. `frame.ptr` may change, so take views only after this.
+            try frame.makePropertyWritable(env);
+
+            var maxima: [4]f64 = undefined;
+            for (0..d.format.numPlanes()) |p| {
+                const plane = frame.plane(T, d.format.planeId(p));
+                var m: T = if (@typeInfo(T) == .float) -std.math.inf(T) else 0;
+                for (0..plane.height) |y| {
+                    for (plane.row(y)) |s| m = @max(m, s);
+                }
+                maxima[p] = if (@typeInfo(T) == .float) m else @floatFromInt(m);
+            }
+
+            const props = frame.propsRW(env);
+            const np = d.format.numPlanes();
+            props.setFloatArray("ZPlaneMax", maxima[0..np]) catch return ctx.fail("could not set ZPlaneMax.", .{});
+            return frame;
+        }
+    }.getFrame;
+}
+
+fn planeMaxCreate(ctx: *avs.Create) !avs.Value {
+    const clip = try ctx.clip(0, "clip");
+    defer clip.release();
+    const format = avs.Format.fromVideoInfo(clip.videoInfo()) catch
+        return ctx.fail("only planar formats are supported.", .{});
+    const get_frame = switch (format.sample) {
+        inline else => |s| PlaneMax.getFrame(planeMaxGetFrame(s.Type())),
+    };
+    const out = try PlaneMax.create(ctx.env, clip, .{ .format = format }, get_frame, .{ .mt_mode = .nice });
+    return avs.Create.returnClip(out);
+}
+
+// ---------------------------------------------------------------------------
+// Plugin entry point
+// ---------------------------------------------------------------------------
+
+/// Interface 11 floor: the convenience layer's `values` group (64-bit aware
+/// argument accessors) is V11, and V11 hosts call `avisynth_c_plugin_init2`.
+const load_options: avs.LoadOptions = .{ .interface = 11 };
+
+/// `avisynth_c_plugin_init2` opts into V11 value handling (64-bit long/double
+/// arguments are passed through instead of being narrowed). Hosts older than
+/// V11 only look for `avisynth_c_plugin_init`, which this plugin deliberately
+/// does not export, so it simply does not load there.
+export fn avisynth_c_plugin_init2(env: ?*c.AVS_ScriptEnvironment) callconv(.c) [*:0]const u8 {
     const e = env orelse return "ZInvert: plugin init called without a script environment.";
 
-    api = avs.getApi(e, REQUIRED_INTERFACE_VERSION, REQUIRED_BUGFIX_VERSION, &required_functions) catch
+    // On a failed load there is no API table to register the real filters,
+    // and LoadPlugin still returns true. Register stubs instead so a call
+    // raises the reason ("ZInvert: cannot run: ... requires interface >= 11")
+    // rather than "there is no function named ZInvert".
+    _ = avs.load(e, load_options) catch {
+        _ = avs.registerFailureStubs(e, "invert_example", &.{ "ZInvert", "ZPlaneMax" }, avs.getLastError());
         return avs.getLastError().ptr;
+    };
 
-    _ = api.avs_add_function.?(e, "ZInvert", "c[enabled]b", &invertCreate, null);
+    if (avs.register(.init(e), &.{
+        .{ .name = "ZInvert", .params = "c[enabled]b", .apply = avs.applyFn("ZInvert", invertCreate) },
+        .{ .name = "ZPlaneMax", .params = "c", .apply = avs.applyFn("ZPlaneMax", planeMaxCreate) },
+    })) |err| return err;
 
     return "ZInvert example plugin";
 }

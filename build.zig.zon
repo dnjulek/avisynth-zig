@@ -1,6 +1,6 @@
 .{
     .name = .avisynth,
-    .version = "0.1.0",
+    .version = "0.2.0",
     .fingerprint = 0x3b1602740b7c8aa3,
     .minimum_zig_version = "0.17.0",
 
@@ -23,6 +23,7 @@
         "build.zig",
         "build.zig.zon",
         "src",
+        "tests",
         "README.md",
         "LICENSE",
     },

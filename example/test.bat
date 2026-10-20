@@ -3,6 +3,9 @@ setlocal
 cd /d "%~dp0"
 
 set "RESULT=1"
+rem test.bat --no-pause : noninteractive (CI / scripted runs)
+set "PAUSE=1"
+if /i "%~1"=="--no-pause" set "PAUSE="
 
 where ffmpeg >nul 2>nul || (echo ERROR: ffmpeg not found in PATH. & goto :done)
 
@@ -26,5 +29,5 @@ echo TEST PASSED: result image saved to test_result.png
 
 :done
 echo.
-pause
+if defined PAUSE pause
 exit /b %RESULT%
