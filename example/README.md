@@ -11,7 +11,7 @@ That means local edits to the module are **not** picked up by this example until
 ## Build
 
 ```sh
-zig build -Doptimize=ReleaseFast   # → zig-out/bin/invert_example.dll
+zig build -Doptimize=fast   # → zig-out/bin/invert_example.dll
 ```
 
 Load it in a script with `LoadPlugin("...\invert_example.dll")`.

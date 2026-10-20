@@ -51,7 +51,7 @@ Call `getApi` once, from `avisynth_c_plugin_init`. The underlying loader initial
 
 ```sh
 cd example
-zig build -Doptimize=ReleaseFast   # → zig-out/bin/invert_example.dll
+zig build -Doptimize=fast   # → zig-out/bin/invert_example.dll
 ```
 
 It registers `ZInvert(clip, bool "enabled")`, a planar invert filter ported from the VapourSynth SDK invert example — see `example/src/invert_example.zig` for the full plugin-init/create/get_frame/free flow, and [`example/README.md`](example/README.md) for details.

@@ -1,4 +1,5 @@
 const std = @import("std");
+const Translator = @import("translate_c").Translator;
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -6,12 +7,27 @@ pub fn build(b: *std.Build) void {
 
     const loader_dep = b.dependency("avs_loader", .{});
     const avisynth_dep = b.dependency("avisynthplus", .{});
+    const translate_c_dep = b.dependency("translate_c", .{});
+
+    // Raw C API types/constants, exposed from main.zig as `avs.c`.
+    const avs_c: Translator = .init(translate_c_dep, .{
+        .c_source_file = avisynth_dep.path("avs_core/include/avisynth_c.h"),
+        .target = target,
+        .optimize = optimize,
+    });
+    avs_c.addIncludePath(avisynth_dep.path("avs_core/include"));
+    // API functions as `*_func` pointer typedefs, not extern symbols.
+    avs_c.defineCMacro("AVSC_NO_DECLSPEC", null);
+    // Skip the header's built-in LoadLibrary-based AVS_Library helpers (they
+    // require windows.h); the C++ loader dependency replaces them.
+    avs_c.defineCMacro("EXTERNAL_AVS_C_API_LOADER", null);
 
     const mod = b.addModule("avisynth", .{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libcpp = true,
+        .imports = &.{.{ .name = "avisynth_c", .module = avs_c.mod }},
     });
 
     // C API headers (avisynth_c.h + avs/) and the loader's header/impl.
@@ -28,7 +44,9 @@ pub fn build(b: *std.Build) void {
     // __cxa_atexit then crashes with heap corruption (access violation reading
     // 0xFFFFFFFFFFFFFFFF) inside avisynth_c_plugin_init. Skipping static-dtor
     // registration is safe here: the loader singleton must live until unload
-    // anyway, and the OS reclaims its memory.
+    // anyway, and the OS reclaims its memory. Kept on 0.17.0: one run of
+    // example/test.avs did not reproduce the crash without it, but heap
+    // corruption can be intermittent and the flag is harmless.
     const cpp_flags = [_][]const u8{ "-std=c++20", "-fno-c++-static-destructors" };
     mod.addCSourceFiles(.{
         .root = loader_dep.path("src"),

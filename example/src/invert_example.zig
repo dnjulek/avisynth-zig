@@ -50,10 +50,10 @@ fn invertPlane(
     }
 }
 
-fn invertGetFrame(fi: [*c]c.AVS_FilterInfo, n: c_int) callconv(.c) [*c]c.AVS_VideoFrame {
-    const d: *Data = @ptrCast(@alignCast(fi.*.user_data));
+fn invertGetFrame(fi: *c.AVS_FilterInfo, n: c_int) callconv(.c) ?*c.AVS_VideoFrame {
+    const d: *Data = @ptrCast(@alignCast(fi.user_data));
 
-    const src = api.avs_get_frame.?(fi.*.child, n);
+    const src = api.avs_get_frame.?(fi.child, n);
     if (src == null) return null;
 
     // Pass the source frame (and its reference) straight through.
@@ -62,13 +62,13 @@ fn invertGetFrame(fi: [*c]c.AVS_FilterInfo, n: c_int) callconv(.c) [*c]c.AVS_Vid
     defer api.avs_release_video_frame.?(src);
 
     // prop_src=src carries the frame properties over to the new frame (V8+).
-    const dst = api.avs_new_video_frame_p_a.?(fi.*.env, &fi.*.vi, src, c.AVS_FRAME_ALIGN);
+    const dst = api.avs_new_video_frame_p_a.?(fi.env, &fi.vi, src, c.AVS_FRAME_ALIGN);
     if (dst == null) {
-        fi.*.@"error" = "ZInvert: could not allocate the destination frame.";
+        fi.@"error" = "ZInvert: could not allocate the destination frame.";
         return null;
     }
 
-    const vi = &fi.*.vi;
+    const vi = &fi.vi;
     const yuv_planes = [4]c_int{ c.AVS_PLANAR_Y, c.AVS_PLANAR_U, c.AVS_PLANAR_V, c.AVS_PLANAR_A };
     const rgb_planes = [4]c_int{ c.AVS_PLANAR_R, c.AVS_PLANAR_G, c.AVS_PLANAR_B, c.AVS_PLANAR_A };
     const is_rgb = c.avs_is_rgb(vi) != 0;
@@ -100,30 +100,32 @@ fn invertGetFrame(fi: [*c]c.AVS_FilterInfo, n: c_int) callconv(.c) [*c]c.AVS_Vid
     return dst;
 }
 
-fn invertSetCacheHints(fi: [*c]c.AVS_FilterInfo, cachehints: c_int, frame_range: c_int) callconv(.c) c_int {
+fn invertSetCacheHints(fi: *c.AVS_FilterInfo, cachehints: c_int, frame_range: c_int) callconv(.c) c_int {
     _ = fi;
     _ = frame_range;
     return if (cachehints == c.AVS_CACHE_GET_MTMODE) c.AVS_MT_NICE_FILTER else 0;
 }
 
-fn invertFree(fi: [*c]c.AVS_FilterInfo) callconv(.c) void {
-    const d: *Data = @ptrCast(@alignCast(fi.*.user_data));
+fn invertFree(fi: *c.AVS_FilterInfo) callconv(.c) void {
+    const d: *Data = @ptrCast(@alignCast(fi.user_data));
     allocator.destroy(d);
-    fi.*.user_data = null;
+    fi.user_data = null;
 }
 
 fn invertCreate(env: ?*c.AVS_ScriptEnvironment, args: c.AVS_Value, user_data: ?*anyopaque) callconv(.c) c.AVS_Value {
     _ = user_data;
 
-    var fi: [*c]c.AVS_FilterInfo = undefined;
+    // avs_new_c_filter always stores a non-null `&filter->d` into its
+    // `AVS_FilterInfo**` out-param, so the cast to the C pointer type is sound.
+    var fi: *c.AVS_FilterInfo = undefined;
     // store_child=1: fi.child holds the source clip and the env releases it.
-    const clip = api.avs_new_c_filter.?(env, &fi, c.avs_array_elt(args, 0), 1);
+    const clip = api.avs_new_c_filter.?(env, @ptrCast(&fi), c.avs_array_elt(args, 0), 1);
     // avs_set_to_clip below takes its own reference, so ours is released
     // unconditionally; on the error paths this destroys the half-built filter
     // (safe — get_frame/free_filter/user_data are not set yet).
     defer api.avs_release_clip.?(clip);
 
-    const vi = &fi.*.vi;
+    const vi = &fi.vi;
     if (c.avs_has_video(vi) == 0)
         return c.avs_new_value_error("ZInvert: input clip must have video.");
     if (c.avs_is_planar(vi) == 0)
@@ -135,10 +137,13 @@ fn invertCreate(env: ?*c.AVS_ScriptEnvironment, args: c.AVS_Value, user_data: ?*
     const data = allocator.create(Data) catch return c.avs_new_value_error("ZInvert: out of memory.");
     data.* = .{ .enabled = enabled };
 
-    fi.*.user_data = data;
-    fi.*.get_frame = &invertGetFrame;
-    fi.*.set_cache_hints = &invertSetCacheHints;
-    fi.*.free_filter = &invertFree;
+    fi.user_data = data;
+    // The callbacks take `*AVS_FilterInfo` rather than translate-c's `[*c]`:
+    // the host always passes the address of its live filter info (never null,
+    // never an array), and the two pointer types are ABI-identical.
+    fi.get_frame = @ptrCast(&invertGetFrame);
+    fi.set_cache_hints = @ptrCast(&invertSetCacheHints);
+    fi.free_filter = @ptrCast(&invertFree);
 
     var v: c.AVS_Value = undefined;
     api.avs_set_to_clip.?(&v, clip);

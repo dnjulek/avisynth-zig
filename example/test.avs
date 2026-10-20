@@ -8,7 +8,7 @@
 # `global current_frame`) instead of inside ScriptClip — ScriptClip only
 # paints runtime errors onto the frame and the decode still "succeeds".
 #
-# Build the plugin first:  zig build -Doptimize=ReleaseFast
+# Build the plugin first:  zig build -Doptimize=fast
 
 LoadPlugin("zig-out/bin/invert_example.dll")
 

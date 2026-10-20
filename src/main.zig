@@ -2,13 +2,8 @@ const std = @import("std");
 
 /// Raw AviSynth+ C API types and constants (avisynth_c.h with AVSC_NO_DECLSPEC,
 /// so API functions are exposed as `*_func` pointer typedefs, not extern symbols).
-pub const c = @cImport({
-    @cDefine("AVSC_NO_DECLSPEC", "1");
-    // Skip the header's built-in LoadLibrary-based AVS_Library helpers (they
-    // require windows.h); the C++ loader dependency replaces them.
-    @cDefine("EXTERNAL_AVS_C_API_LOADER", "1");
-    @cInclude("avisynth_c.h");
-});
+/// Translated by the translate-c package in build.zig.
+pub const c = @import("avisynth_c");
 
 pub const INTERFACE_VERSION: c_int = c.AVISYNTH_INTERFACE_VERSION;
 pub const INTERFACE_BUGFIX_VERSION: c_int = c.AVISYNTHPLUS_INTERFACE_BUGFIX_VERSION;
@@ -582,21 +577,21 @@ pub const AvsApi = extern struct {
 // wrong pointer. Any drift is a compile error.
 comptime {
     @setEvalBranchQuota(100_000);
-    const fields = @typeInfo(AvsApi).@"struct".fields;
-    if (fields.len != api_function_names.len) {
+    const info = @typeInfo(AvsApi).@"struct";
+    if (info.field_names.len != api_function_names.len) {
         @compileError(std.fmt.comptimePrint(
             "AvsApi has {d} fields but avs_c_api_functions.inc has {d} FUNC entries — regenerate the field list (see AvsApi doc comment)",
-            .{ fields.len, api_function_names.len },
+            .{ info.field_names.len, api_function_names.len },
         ));
     }
-    for (fields, api_function_names) |field, name| {
-        if (!std.mem.eql(u8, field.name, name)) {
+    for (info.field_names, api_function_names) |field_name, name| {
+        if (!std.mem.eql(u8, field_name, name)) {
             @compileError("AvsApi is out of sync with avs_c_api_functions.inc at '" ++ name ++ "' — regenerate the field list (see AvsApi doc comment)");
         }
     }
     // Every entry is a single function pointer; anything else would break the
     // 1:1 layout match with the C++ struct.
-    std.debug.assert(@sizeOf(AvsApi) == fields.len * @sizeOf(fields[0].type));
+    std.debug.assert(@sizeOf(AvsApi) == info.field_names.len * @sizeOf(info.field_types[0]));
 }
 
 extern fn avsz_get_api(
@@ -640,7 +635,7 @@ test "module compiles" {
 }
 
 test "AvsApi matches the loader's function table" {
-    try std.testing.expectEqual(api_function_names.len, @typeInfo(AvsApi).@"struct".fields.len);
+    try std.testing.expectEqual(api_function_names.len, @typeInfo(AvsApi).@"struct".field_names.len);
     try std.testing.expect(@hasField(AvsApi, "avs_add_function"));
     try std.testing.expect(@hasField(AvsApi, "avs_get_frame"));
     try std.testing.expect(@hasField(AvsApi, "avs_release_video_frame"));

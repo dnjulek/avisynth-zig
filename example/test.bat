@@ -7,7 +7,7 @@ set "RESULT=1"
 where ffmpeg >nul 2>nul || (echo ERROR: ffmpeg not found in PATH. & goto :done)
 
 if not exist "zig-out\bin\invert_example.dll" (
-    echo ERROR: plugin not built. Run: zig build -Doptimize=ReleaseFast
+    echo ERROR: plugin not built. Run: zig build -Doptimize=fast
     goto :done
 )
 
