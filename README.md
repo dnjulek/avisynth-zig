@@ -96,6 +96,7 @@ Wrappers call through `avs.api.fnPtr`, which panics in safe builds when an entry
 | `FrameCtx.child()` | borrowed: never release |
 | `Create.arg/args`, array elements, string arguments | borrowed for the call (argument strings live as long as the environment) |
 | `Plane`/`PlaneMut`, `PropsRO`/`PropsRW` | borrow the frame; invalid after `makeWritable` / `makePropertyWritable` (which may replace `ptr`) |
+| `Frame.makeWritable` / `makePropertyWritable` | error when the host returns -1 (the frame is unchanged and still owned); in get_frame use `FrameCtx.makeWritable` / `makePropertyWritable`, which also record the host's reason |
 | `Filter.create(env, child, data, …)` | on success the filter owns its copy of `data` (`Data.deinit` runs in `free_filter`); on error nothing was taken |
 
 **Errors.** Create functions return `!avs.Value`. `ctx.fail(fmt, args)` records `"<name>: <message>"`, which reaches the script as an AviSynth error stored with `SaveString`. Frame callbacks return `!avs.Frame`; errors become `fi.error` with a durable message and a null frame. An upstream failure keeps the upstream message. Messages never point into stack buffers.

@@ -353,6 +353,25 @@ pub const FrameCtx = struct {
         };
     }
 
+    /// `frame.makeWritable` with the host's reason captured on failure (the
+    /// frame stays owned by the caller either way).
+    pub fn makeWritable(self: *FrameCtx, frame: *Frame) error{Failed}!void {
+        const e = self.env();
+        frame.makeWritable(e) catch {
+            const msg = e.lastError() orelse "out of memory";
+            return self.fail("could not make the frame writable: {s}", .{msg});
+        };
+    }
+
+    /// `frame.makePropertyWritable` with the host's reason captured on failure.
+    pub fn makePropertyWritable(self: *FrameCtx, frame: *Frame) error{Failed}!void {
+        const e = self.env();
+        frame.makePropertyWritable(e) catch {
+            const msg = e.lastError() orelse "out of memory";
+            return self.fail("could not make the frame properties writable: {s}", .{msg});
+        };
+    }
+
     fn setError(self: *FrameCtx, err: anyerror) void {
         var fallback: Diag = .{};
         const msg = self.diag.message() orelse blk: {

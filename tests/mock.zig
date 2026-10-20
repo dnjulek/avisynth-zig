@@ -131,7 +131,32 @@ fn m_new_video_frame_p_a(_: ?*c.AVS_ScriptEnvironment, _: [*c]const c.AVS_VideoI
     return newFrame();
 }
 fn m_get_error(_: ?*c.AVS_ScriptEnvironment) callconv(.c) [*c]const u8 {
+    if (writable_mode == .refuse) return "mock writability refused";
     return if (fail_alloc) "mock allocation refused" else null;
+}
+
+/// Behavior of the mock avs_make_writable / avs_make_property_writable.
+const WritableMode = enum {
+    /// Already unique: 0, pointer unchanged.
+    noop,
+    /// Copy: the old reference is released, a new frame returned, 1.
+    replace,
+    /// The host threw: -1, pointer unchanged (still owned by the caller).
+    refuse,
+};
+var writable_mode: WritableMode = .noop;
+
+fn m_make_writable(_: ?*c.AVS_ScriptEnvironment, pvf: [*c][*c]c.AVS_VideoFrame) callconv(.c) c_int {
+    switch (writable_mode) {
+        .noop => return 0,
+        .replace => {
+            const old = pvf.*;
+            pvf.* = newFrame();
+            m_release_video_frame(old);
+            return 1;
+        },
+        .refuse => return -1,
+    }
 }
 fn m_save_string(_: ?*c.AVS_ScriptEnvironment, s: [*c]const u8, len: c_int) callconv(.c) [*c]u8 {
     const n: usize = @intCast(len);
@@ -191,10 +216,13 @@ fn setUp() void {
     mock_table.avs_get_as_bool = &m_get_as_bool;
     mock_table.avs_get_array_size = &m_get_array_size;
     mock_table.avs_get_array_elt = &m_get_array_elt;
+    mock_table.avs_make_writable = &m_make_writable;
+    mock_table.avs_make_property_writable = &m_make_writable;
     avs.api.setTableForTesting(&mock_table);
     live_clips = 0;
     live_frames = 0;
     fail_alloc = false;
+    writable_mode = .noop;
 }
 
 fn tearDown() !void {
@@ -340,6 +368,68 @@ test "get_frame upstream failure sets fi.error and releases local frames" {
     releaseClip(a);
     releaseClip(b);
     m_release_value(result.raw);
+    try tearDown();
+}
+
+// ---------------------------------------------------------------------------
+// Writability contracts
+// ---------------------------------------------------------------------------
+
+test "makeWritable/makePropertyWritable: no-op, replacement and refusal" {
+    setUp();
+    const env: avs.Env = .init(env_ptr);
+    inline for (.{ avs.Frame.makeWritable, avs.Frame.makePropertyWritable }) |make| {
+        var f: avs.Frame = .{ .ptr = newFrame() };
+        const orig = f.ptr;
+
+        writable_mode = .noop;
+        try make(&f, env);
+        try std.testing.expectEqual(orig, f.ptr);
+
+        writable_mode = .replace;
+        try make(&f, env);
+        try std.testing.expect(f.ptr != orig);
+        try std.testing.expectEqual(@as(i32, 1), live_frames);
+
+        // -1 with the pointer unchanged must be an error, and the frame
+        // stays owned (released exactly once below).
+        writable_mode = .refuse;
+        const kept = f.ptr;
+        try std.testing.expectError(error.FrameAllocationFailed, make(&f, env));
+        try std.testing.expectEqual(kept, f.ptr);
+        f.release();
+    }
+    try tearDown();
+}
+
+const PropData = struct {};
+const FP = avs.Filter(PropData, "PropFilter");
+
+fn propGetFrame(_: *PropData, ctx: *avs.FrameCtx, n: c_int) !avs.Frame {
+    var f = try ctx.childFrame(n);
+    errdefer f.release();
+    try ctx.makePropertyWritable(&f);
+    return f;
+}
+
+test "FrameCtx.makePropertyWritable failure sets fi.error and leaks nothing" {
+    setUp();
+    const a = newClip(test_vi);
+    const clip = try FP.create(.init(env_ptr), .{ .ptr = @ptrCast(a) }, .{}, FP.getFrame(propGetFrame), .{ .mt_mode = .nice });
+    const filt = mc(clip.ptr);
+
+    writable_mode = .refuse;
+    try std.testing.expect(m_get_frame(@ptrCast(filt), 0) == null);
+    try std.testing.expectEqualStrings("PropFilter: could not make the frame properties writable: mock writability refused", std.mem.span(filt.filter.?.@"error"));
+    try std.testing.expectEqual(@as(i32, 0), live_frames);
+
+    writable_mode = .replace;
+    const f = m_get_frame(@ptrCast(filt), 0);
+    try std.testing.expect(f != null);
+    m_release_video_frame(f);
+
+    releaseClip(a);
+    releaseClip(filt);
     try tearDown();
 }
 

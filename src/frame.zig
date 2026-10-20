@@ -165,17 +165,24 @@ pub const Frame = struct {
     /// Make pixels and properties uniquely owned (may copy the frame and
     /// replace `ptr`; earlier plane/property views become invalid). [planar]
     pub fn makeWritable(self: *Frame, env: Env) error{FrameAllocationFailed}!void {
-        var p: [*c]c.AVS_VideoFrame = self.ptr;
-        _ = api.fnPtr("avs_make_writable")(env.ptr, &p);
-        self.ptr = p orelse return error.FrameAllocationFailed;
+        return self.makeUnique(env, "avs_make_writable");
     }
 
     /// Make only the property map uniquely owned; pixels stay shared (cheap
     /// re-reference). Use for analysis filters that only add metadata. May
     /// replace `ptr`. [props]
     pub fn makePropertyWritable(self: *Frame, env: Env) error{FrameAllocationFailed}!void {
+        return self.makeUnique(env, "avs_make_property_writable");
+    }
+
+    /// The host returns 0 (already unique, `ptr` unchanged) or 1 (copied: the
+    /// old reference was released and `ptr` replaced) on success, and -1 when
+    /// it threw. On -1 the pointer is unchanged and still owned by `self`, so
+    /// the caller releases it as usual; `env.lastError()` holds the reason.
+    fn makeUnique(self: *Frame, env: Env, comptime name: []const u8) error{FrameAllocationFailed}!void {
         var p: [*c]c.AVS_VideoFrame = self.ptr;
-        _ = api.fnPtr("avs_make_property_writable")(env.ptr, &p);
+        const r = api.fnPtr(name)(env.ptr, &p);
+        if (r < 0) return error.FrameAllocationFailed;
         self.ptr = p orelse return error.FrameAllocationFailed;
     }
 
