@@ -35,8 +35,8 @@ ZPlaneMax(clip)
 - **`invertPlane`**: per-row processing with independent source and destination pitches (a cropped source keeps its parent's pitch).
 - **`ctx.childFrame` / `ctx.newFrame(src)`**: owned frames, props copied, errors becoming durable `fi.error` messages.
 - **`planeMaxGetFrame`**: `makePropertyWritable` (which may replace the frame pointer, so views are taken after it) followed by `propsRW().setFloatArray`.
-- **`create`**: `ctx.clip` (owned) plus `defer release`, `ctx.boolean`, `avs.Format.fromVideoInfo`, and `avs.Create.returnClip`.
-- **`avisynth_c_plugin_init2`**: `avs.load(.{ .interface = 11 })`, `avs.registerFailureStubs` on failure, and `avs.register` (comptime-checked parameter strings, checked registration results).
+- **`create`**: `ctx.clip` (owned) plus `defer release`, `avs.Format.fromVideoInfo`, and `avs.Create.returnClip`. Named arguments are read by name through `ctx.named(invert_params)` (`arg.boolean("enabled", true)`); the key is checked against the parameter string at comptime. The unnamed leading clip stays positional (`ctx.clip(0, "clip")`).
+- **`avisynth_c_plugin_init2`**: `avs.load(.{ .interface = 11 })`, `avs.registerFailureStubs` on failure, and `avs.register` (comptime-checked parameter strings, checked registration results). Each function registers the same `params` constant its create function reads.
 
 ## Testing
 

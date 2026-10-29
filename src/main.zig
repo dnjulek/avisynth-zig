@@ -53,6 +53,9 @@ pub const SampleType = format.SampleType;
 
 pub const filter = @import("filter.zig");
 pub const Create = filter.Create;
+pub const NamedArgs = filter.NamedArgs;
+pub const Param = filter.Param;
+pub const paramList = filter.paramList;
 pub const FrameCtx = filter.FrameCtx;
 pub const Filter = filter.Filter;
 pub const MtMode = filter.MtMode;

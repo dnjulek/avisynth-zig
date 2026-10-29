@@ -64,6 +64,15 @@ pub const Create = struct {
         return error.Failed;
     }
 
+    /// Key-based view of this call's arguments for the function's own
+    /// parameter string (the one it was registered with): the getters below
+    /// addressed by name instead of position, e.g.
+    /// `const a = ctx.named(params); const d = try a.int(i32, "d", 1, 0, 16);`.
+    /// See `NamedArgs`.
+    pub fn named(self: *Create, comptime params: []const u8) NamedArgs(params) {
+        return .{ .ctx = self };
+    }
+
     pub fn arg(self: *const Create, i: usize) Value {
         return self.args.at(i);
     }
@@ -570,13 +579,22 @@ fn hostAddFunction() ?AddFunctionFn {
     return lib.lookup(AddFunctionFn, "avs_add_function");
 }
 
-/// Per-argument names of a parameter string (null for unnamed parameters),
-/// in argument order. Comptime.
-pub fn paramNames(comptime params: []const u8) []const ?[:0]const u8 {
+/// One parameter of a parameter string.
+pub const Param = struct {
+    /// null for an unnamed (positional) parameter
+    name: ?[:0]const u8,
+    /// AviSynth type character: one of "bifscna."
+    type: u8,
+    /// declared with '*' or '+'
+    array: bool,
+};
+
+/// The parameters of a parameter string, in argument order. Comptime.
+pub fn paramList(comptime params: []const u8) []const Param {
     comptime {
         @setEvalBranchQuota(100_000);
         checkParams(params);
-        var out: []const ?[:0]const u8 = &.{};
+        var out: []const Param = &.{};
         var i: usize = 0;
         while (i < params.len) {
             var name: ?[:0]const u8 = null;
@@ -585,12 +603,136 @@ pub fn paramNames(comptime params: []const u8) []const ?[:0]const u8 {
                 name = params[i + 1 .. end] ++ "";
                 i = end + 1;
             }
+            const t = params[i];
             i += 1;
-            if (i < params.len and (params[i] == '*' or params[i] == '+')) i += 1;
-            out = out ++ .{name};
+            const array = i < params.len and (params[i] == '*' or params[i] == '+');
+            if (array) i += 1;
+            out = out ++ .{Param{ .name = name, .type = t, .array = array }};
         }
         return out;
     }
+}
+
+/// Per-argument names of a parameter string (null for unnamed parameters),
+/// in argument order. Comptime.
+pub fn paramNames(comptime params: []const u8) []const ?[:0]const u8 {
+    comptime {
+        var out: []const ?[:0]const u8 = &.{};
+        for (paramList(params)) |p| out = out ++ .{p.name};
+        return out;
+    }
+}
+
+/// `Create`'s argument getters addressed by parameter name (from
+/// `Create.named`). The name is resolved to its position at compile time, and
+/// is also the name in error messages.
+///
+/// Compile errors instead of silent misreads:
+/// - a name that `params` does not declare (names are matched exactly);
+/// - a getter that does not fit the declared type: `int`/`optInt` need `i`,
+///   `float`/`optFloat` need `f`, `boolean` needs `b`, `string` needs `s`,
+///   `clip`/`optClip` need `c`, all of them scalar; `intArray`/`perPlaneInt`/
+///   `planes` need `i*` (or `i+`), `floatArray`/`perPlaneFloat` need `f*`.
+///   `defined`, `arrayLen`, `arg` and `index` take any parameter.
+///
+/// Unnamed parameters (typically the leading clip, `c`) have no name: read
+/// them with the positional getters (`ctx.clip(0, "clip")`).
+pub fn NamedArgs(comptime params: []const u8) type {
+    const list = comptime paramList(params);
+    return struct {
+        ctx: *Create,
+
+        const Self = @This();
+
+        /// Argument position of `key`.
+        pub fn index(comptime key: []const u8) usize {
+            comptime {
+                for (list, 0..) |p, i| {
+                    if (p.name) |n| if (std.mem.eql(u8, n, key)) return i;
+                }
+                @compileError("parameter '" ++ key ++ "' is not declared in \"" ++ params ++ "\"");
+            }
+        }
+
+        /// `index(key)`, checked against the getter's expected type.
+        fn typed(comptime key: []const u8, comptime types: []const u8, comptime array: bool, comptime getter: []const u8) usize {
+            comptime {
+                const i = index(key);
+                const p = list[i];
+                if (std.mem.indexOfScalar(u8, types, p.type) == null or p.array != array) {
+                    const declared = [_]u8{p.type} ++ (if (p.array) "*" else "");
+                    const wanted = types ++ (if (array) "*" else "");
+                    @compileError(getter ++ "(\"" ++ key ++ "\"): parameter is declared '" ++ declared ++
+                        "' in \"" ++ params ++ "\"; " ++ getter ++ " reads '" ++ wanted ++ "'");
+                }
+                return i;
+            }
+        }
+
+        pub fn arg(self: Self, comptime key: []const u8) Value {
+            return self.ctx.arg(comptime index(key));
+        }
+
+        pub fn defined(self: Self, comptime key: []const u8) bool {
+            return self.ctx.defined(comptime index(key));
+        }
+
+        pub fn arrayLen(self: Self, comptime key: []const u8) ?usize {
+            return self.ctx.arrayLen(comptime index(key));
+        }
+
+        pub fn clip(self: Self, comptime key: []const u8) error{Failed}!Clip {
+            return self.ctx.clip(comptime typed(key, "c", false, "clip"), key);
+        }
+
+        pub fn optClip(self: Self, comptime key: []const u8) error{Failed}!?Clip {
+            return self.ctx.optClip(comptime typed(key, "c", false, "optClip"), key);
+        }
+
+        pub fn int(self: Self, comptime T: type, comptime key: []const u8, default: ?T, min: T, max: T) error{Failed}!T {
+            return self.ctx.int(T, comptime typed(key, "i", false, "int"), key, default, min, max);
+        }
+
+        pub fn optInt(self: Self, comptime T: type, comptime key: []const u8, min: T, max: T) error{Failed}!?T {
+            return self.ctx.optInt(T, comptime typed(key, "i", false, "optInt"), key, min, max);
+        }
+
+        pub fn float(self: Self, comptime T: type, comptime key: []const u8, default: ?T, min: T, max: T) error{Failed}!T {
+            return self.ctx.float(T, comptime typed(key, "f", false, "float"), key, default, min, max);
+        }
+
+        pub fn optFloat(self: Self, comptime T: type, comptime key: []const u8, min: T, max: T) error{Failed}!?T {
+            return self.ctx.optFloat(T, comptime typed(key, "f", false, "optFloat"), key, min, max);
+        }
+
+        pub fn boolean(self: Self, comptime key: []const u8, default: bool) error{Failed}!bool {
+            return self.ctx.boolean(comptime typed(key, "b", false, "boolean"), key, default);
+        }
+
+        pub fn string(self: Self, comptime key: []const u8) error{Failed}!?[:0]const u8 {
+            return self.ctx.string(comptime typed(key, "s", false, "string"), key);
+        }
+
+        pub fn intArray(self: Self, comptime T: type, comptime key: []const u8, out: []T, min: T, max: T) error{Failed}!?[]T {
+            return self.ctx.intArray(T, comptime typed(key, "i", true, "intArray"), key, out, min, max);
+        }
+
+        pub fn floatArray(self: Self, comptime T: type, comptime key: []const u8, out: []T, min: T, max: T) error{Failed}!?[]T {
+            return self.ctx.floatArray(T, comptime typed(key, "f", true, "floatArray"), key, out, min, max);
+        }
+
+        pub fn perPlaneInt(self: Self, comptime T: type, comptime key: []const u8, default: T, min: T, max: T) error{Failed}![3]T {
+            return self.ctx.perPlaneInt(T, comptime typed(key, "i", true, "perPlaneInt"), key, default, min, max);
+        }
+
+        pub fn perPlaneFloat(self: Self, comptime T: type, comptime key: []const u8, default: T, min: T, max: T) error{Failed}![3]T {
+            return self.ctx.perPlaneFloat(T, comptime typed(key, "f", true, "perPlaneFloat"), key, default, min, max);
+        }
+
+        pub fn planes(self: Self, comptime key: []const u8, num_planes: u8, default_all: bool) error{Failed}![4]bool {
+            return self.ctx.planes(comptime typed(key, "i", true, "planes"), num_planes, default_all);
+        }
+    };
 }
 
 /// Distinct non-null `user_data` tags for `register` (see there).
@@ -644,6 +786,25 @@ test "paramNames" {
     try std.testing.expect(n[0] == null and n[1] == null);
     try std.testing.expectEqualStrings("frames", n[2].?);
     try std.testing.expectEqualStrings("mismatch", n[3].?);
+}
+
+test "paramList" {
+    const p = comptime paramList("c[thr]f*[n]i[on]b[s]s.+");
+    try std.testing.expectEqual(@as(usize, 6), p.len);
+    try std.testing.expect(p[0].name == null and p[0].type == 'c' and !p[0].array);
+    try std.testing.expect(std.mem.eql(u8, p[1].name.?, "thr") and p[1].type == 'f' and p[1].array);
+    try std.testing.expect(p[2].type == 'i' and !p[2].array);
+    try std.testing.expect(p[3].type == 'b' and p[4].type == 's');
+    try std.testing.expect(p[5].name == null and p[5].type == '.' and p[5].array);
+}
+
+test "NamedArgs.index resolves at compile time" {
+    const A = NamedArgs("c[d]i[a]i[h]f[channels]s[rclip]c");
+    comptime {
+        std.debug.assert(A.index("d") == 1);
+        std.debug.assert(A.index("h") == 3);
+        std.debug.assert(A.index("rclip") == 5);
+    }
 }
 
 test "checkParams accepts real signatures" {

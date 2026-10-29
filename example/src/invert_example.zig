@@ -6,9 +6,10 @@
 //! property-only analysis filter that stores each plane's maximum as the frame
 //! property `ZPlaneMax` (an int/float array) without copying any pixels.
 //!
-//! Uses the module's convenience layer (`avs.Filter`, `avs.Create`,
-//! `avs.FrameCtx`, `avs.Format`); the raw table stays reachable through
-//! `avs.table()` / `avs.c` for anything the wrappers do not cover.
+//! Uses the module's convenience layer (`avs.Filter`, `avs.Create` and its
+//! named-argument view, `avs.FrameCtx`, `avs.Format`); the raw table stays
+//! reachable through `avs.table()` / `avs.c` for anything the wrappers do not
+//! cover.
 
 const std = @import("std");
 const avs = @import("avisynth");
@@ -23,6 +24,10 @@ const InvertData = struct {
 };
 
 const Invert = avs.Filter(InvertData, "ZInvert");
+
+/// Registered with the function (`avs.register` below) and read back by name
+/// in the create function (`ctx.named`): one definition for both.
+const invert_params = "c[enabled]b";
 
 fn invertPlane(
     comptime T: type,
@@ -70,9 +75,14 @@ fn invertGetFrame(comptime T: type) Invert.GetFrameFn {
 }
 
 fn invertCreate(ctx: *avs.Create) !avs.Value {
+    // The leading clip is unnamed, so it is read by position; named
+    // parameters are read by name. A key `invert_params` doesn't declare, or a
+    // getter that doesn't fit its type (`arg.int("enabled", ...)`), is a
+    // compile error.
+    const arg = ctx.named(invert_params);
     const clip = try ctx.clip(0, "clip");
     defer clip.release();
-    const enabled = try ctx.boolean(1, "enabled", true);
+    const enabled = try arg.boolean("enabled", true);
 
     const format = avs.Format.fromVideoInfo(clip.videoInfo()) catch
         return ctx.fail("only planar formats are supported.", .{});
@@ -97,6 +107,8 @@ const MaxData = struct {
 };
 
 const PlaneMax = avs.Filter(MaxData, "ZPlaneMax");
+
+const plane_max_params = "c";
 
 fn planeMaxGetFrame(comptime T: type) PlaneMax.GetFrameFn {
     return struct {
@@ -163,8 +175,8 @@ export fn avisynth_c_plugin_init2(env: ?*c.AVS_ScriptEnvironment) callconv(.c) [
     };
 
     if (avs.register(.init(e), &.{
-        .{ .name = "ZInvert", .params = "c[enabled]b", .apply = avs.applyFn("ZInvert", invertCreate) },
-        .{ .name = "ZPlaneMax", .params = "c", .apply = avs.applyFn("ZPlaneMax", planeMaxCreate) },
+        .{ .name = "ZInvert", .params = invert_params, .apply = avs.applyFn("ZInvert", invertCreate) },
+        .{ .name = "ZPlaneMax", .params = plane_max_params, .apply = avs.applyFn("ZPlaneMax", planeMaxCreate) },
     })) |err| return err;
 
     return "ZInvert example plugin";

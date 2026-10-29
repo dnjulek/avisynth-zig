@@ -485,3 +485,45 @@ test "Create argument getters: defaults, ranges, finiteness, arrays, planes" {
     try std.testing.expectEqual([3]f32{ 4, 4, 4 }, try ctx.perPlaneFloat(f32, 0, "g", 4, 0, 10));
     try std.testing.expect(!try ctx.boolean(0, "h", false));
 }
+
+test "Create.named: getters by parameter name match the positional ones" {
+    setUp();
+    defer tearDown() catch unreachable;
+    const nan = std.math.nan(f32);
+    var arr3 = [_]c.AVS_Value{ intValue(0), intValue(2), intValue(2) };
+    var farr = [_]c.AVS_Value{ c.avs_new_value_float(1.5), c.avs_new_value_float(nan) };
+    var args = [_]c.AVS_Value{
+        c.avs_void, // 0: a, absent
+        intValue(5), // 1: b
+        c.avs_new_value_float(nan), // 2: c
+        c.avs_new_value_array(&arr3, 3), // 3: planes, duplicate plane
+        c.avs_new_value_array(&farr, 2), // 4: e, nan element
+        c.avs_new_value_float(2.5), // 5: g, scalar used as a 1-element array
+        c.avs_new_value_bool(1), // 6: h
+        c.avs_void, // 7: s, absent
+    };
+    var ctx = testCreate(&args);
+    const a = ctx.named("[a]i[b]i[c]f[planes]i*[e]f*[g]f*[h]b[s]s");
+
+    try std.testing.expectEqual(@as(u8, 9), try a.int(u8, "a", 9, 0, 10));
+    try std.testing.expect(!a.defined("a"));
+    try std.testing.expect(a.defined("b"));
+    try std.testing.expectEqual(@as(?usize, 2), a.arrayLen("e"));
+    try std.testing.expectError(error.Failed, a.int(u8, "a", null, 0, 10));
+    try std.testing.expectEqualStrings("T: a is required.", ctx.diag.message().?);
+    try std.testing.expectError(error.Failed, a.int(u2, "b", null, 0, 3));
+    try std.testing.expectEqualStrings("T: b value 5 is out of range [0, 3].", ctx.diag.message().?);
+    try std.testing.expectEqual(@as(?i32, null), try a.optInt(i32, "a", 0, 10));
+    try std.testing.expectError(error.Failed, a.float(f32, "c", null, -1, 1));
+    try std.testing.expectEqualStrings("T: c value nan is not a finite number.", ctx.diag.message().?);
+    try std.testing.expectError(error.Failed, a.planes("planes", 3, true));
+    try std.testing.expectEqualStrings("T: plane specified twice.", ctx.diag.message().?);
+    try std.testing.expectError(error.Failed, a.perPlaneFloat(f32, "e", 0, -10, 10));
+    try std.testing.expectEqualStrings("T: e[1] value nan is not a finite number.", ctx.diag.message().?);
+    try std.testing.expectEqual([3]f32{ 2.5, 2.5, 2.5 }, try a.perPlaneFloat(f32, "g", 0, 0, 10));
+    try std.testing.expect(try a.boolean("h", false));
+    try std.testing.expectEqual(@as(?[:0]const u8, null), try a.string("s"));
+    var buf: [1]f32 = undefined;
+    try std.testing.expectError(error.Failed, a.floatArray(f32, "e", &buf, -10, 10));
+    try std.testing.expectEqualStrings("T: e has too many elements (got 2, max 1).", ctx.diag.message().?);
+}

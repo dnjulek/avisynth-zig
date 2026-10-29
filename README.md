@@ -106,6 +106,25 @@ Wrappers call through `avs.api.fnPtr`, which panics in safe builds when an entry
 - Floats are checked for finiteness, then range, as f64 before narrowing.
 - `intArray`/`floatArray`/`perPlaneFloat`/`planes` cover AviSynth+ array parameters (`[key]i*`; scripts pass `key=[1, 2]` or a scalar). Too many elements, duplicate planes, and out-of-range planes are errors.
 
+AviSynth passes arguments by position. To read them by name instead, take a view for the function's own parameter string once:
+
+```zig
+pub const params = "c[d]i[h]f[planes]i*[rclip]c";
+
+fn create(ctx: *avs.Create) !avs.Value {
+    const clip = try ctx.clip(0, "clip"); // unnamed: positional
+    defer clip.release();
+    const a = ctx.named(params);
+    const d = try a.int(u32, "d", 1, 0, 16);
+    const h = try a.float(f32, "h", 1.2, 0, 1e6);
+    const planes = try a.planes("planes", 3, true);
+    const rclip = try a.optClip("rclip");
+    // ...
+}
+```
+
+The getters are the same, keyed by name. The name is resolved to its position at comptime and is also the name in error messages. A name the string doesn't declare, or a getter that doesn't fit the declared type (`float` on an `i`, `intArray` on a scalar, ...), is a compile error instead of a silent misread. `paramList(params)` exposes the parsed parameters (`name`, `type`, `array`).
+
 `checkParams` validates parameter strings at comptime, and `forwardArgs` re-invokes another function with the same arguments.
 
 **Geometry.** `Plane(T)` keeps `pitch` (bytes) and `width` (samples) separate, and validates sizes and alignment from the host's signed values:
